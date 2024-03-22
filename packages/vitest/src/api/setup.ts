@@ -164,6 +164,13 @@ export function setup(vitestOrWorkspace: Vitest | WorkspaceProject, _server?: Vi
         getProvidedContext() {
           return 'ctx' in vitestOrWorkspace ? vitestOrWorkspace.getProvidedContext() : ({} as any)
         },
+        executeCell(_path, _id, _language, _code) {
+          return Promise.resolve({
+            items: [
+              { data: new Uint8Array(Buffer.from('executed', 'utf8')), mime: 'text/plain' },
+            ],
+          })
+        },
       },
       {
         post: msg => ws.send(msg),

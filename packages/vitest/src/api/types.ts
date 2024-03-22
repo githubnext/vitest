@@ -6,6 +6,15 @@ export interface TransformResultWithSource extends TransformResult {
   source?: string
 }
 
+export interface CellOutputItem {
+  data: Uint8Array
+  mime: string
+}
+
+export interface CellOutput {
+  items: CellOutputItem[]
+}
+
 export interface WebSocketHandlers {
   onUnhandledError: (error: unknown, type: string) => Promise<void>
   onCollected: (files?: File[]) => Promise<void>
@@ -36,6 +45,8 @@ export interface WebSocketHandlers {
   finishBrowserTests: () => void
   getBrowserFiles: () => string[]
   debug: (...args: string[]) => void
+
+  executeCell: (path: string, id: string, language: string, code: string) => Promise<CellOutput>
 }
 
 export interface WebSocketEvents extends Pick<Reporter, 'onCollected' | 'onFinished' | 'onTaskUpdate' | 'onUserConsoleLog' | 'onPathsCollected'> {
