@@ -7,7 +7,7 @@ export interface TransformResultWithSource extends TransformResult {
 }
 
 export interface CellOutputItem {
-  data: Uint8Array
+  data: number[] // Uint8Array
   mime: string
 }
 

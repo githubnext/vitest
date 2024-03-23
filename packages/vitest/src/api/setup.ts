@@ -1,6 +1,6 @@
 import { existsSync, promises as fs } from 'node:fs'
 
-import { dirname } from 'pathe'
+import { dirname, join, parse as parsePath } from 'pathe'
 import type { BirpcReturn } from 'birpc'
 import { createBirpc } from 'birpc'
 import { parse, stringify } from 'flatted'
@@ -9,6 +9,8 @@ import { WebSocketServer } from 'ws'
 import { isFileServingAllowed } from 'vite'
 import type { ViteDevServer } from 'vite'
 import type { StackTraceParserOptions } from '@vitest/utils/source-map'
+import { ViteNodeRunner } from 'vite-node/client'
+import { ViteNodeServer } from 'vite-node/server'
 import { API_PATH } from '../constants'
 import type { Vitest } from '../node'
 import type { File, ModuleGraphData, Reporter, TaskResultPack, UserConsoleLog } from '../types'
@@ -25,6 +27,22 @@ export function setup(vitestOrWorkspace: Vitest | WorkspaceProject, _server?: Vi
   const clients = new Map<WebSocket, BirpcReturn<WebSocketEvents, WebSocketHandlers>>()
 
   const server = _server || ctx.server
+
+  const vitenode = new ViteNodeServer(server)
+  const runner = new ViteNodeRunner({
+    root: server.config.root,
+    base: server.config.base,
+    fetchModule(id: string) {
+      return vitenode.fetchModule(id)
+    },
+    resolveId(id: string, importer?: string) {
+      return vitenode.resolveId(id, importer)
+    },
+  })
+
+  server.watcher.on('change', (id) => {
+    runner.moduleCache.delete(id)
+  })
 
   server.httpServer?.on('upgrade', (request, socket, head) => {
     if (!request.url)
@@ -164,12 +182,49 @@ export function setup(vitestOrWorkspace: Vitest | WorkspaceProject, _server?: Vi
         getProvidedContext() {
           return 'ctx' in vitestOrWorkspace ? vitestOrWorkspace.getProvidedContext() : ({} as any)
         },
-        executeCell(_path, _id, _language, _code) {
-          return Promise.resolve({
-            items: [
-              { data: new Uint8Array(Buffer.from('executed', 'utf8')), mime: 'text/plain' },
-            ],
-          })
+        async executeCell(path, id, language, code) {
+          try {
+            const ext = (() => {
+              switch (language) {
+                case 'typescriptreact':
+                  return 'tsx'
+                case 'typescript':
+                  return 'ts'
+                case 'javascriptreact':
+                  return 'jsx'
+                case 'javascript':
+                  return 'js'
+                default:
+                  throw new Error(`unknown language "${language}"`)
+              }
+            })()
+            const parsedPath = parsePath(path)
+            const cellPath = join(parsedPath.dir, `.${parsedPath.name}-${id}.${ext}`)
+            await fs.writeFile(cellPath, code, 'utf-8')
+
+            runner.moduleCache.delete(cellPath)
+            const { default: result } = await runner.executeFile(cellPath)
+
+            return Promise.resolve({
+              items: [
+                { data: [...Buffer.from(JSON.stringify(result), 'utf8')], mime: 'application/json' },
+              ],
+            })
+          }
+          catch (e) {
+            const err = e as Error
+            const obj = {
+              name: err.name,
+              message: err.message,
+              stack: err.stack,
+            }
+            const json = JSON.stringify(obj, undefined, '\t')
+            return Promise.resolve({
+              items: [
+                { data: [...Buffer.from(json, 'utf8').values()], mime: 'application/vnd.code.notebook.error' },
+              ],
+            })
+          }
         },
       },
       {
