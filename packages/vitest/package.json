@@ -143,6 +143,9 @@
     }
   },
   "dependencies": {
+    "@babel/generator": "^7.24.1",
+    "@babel/parser": "^7.24.1",
+    "@babel/types": "^7.24.0",
     "@vitest/expect": "workspace:*",
     "@vitest/runner": "workspace:*",
     "@vitest/snapshot": "workspace:*",
@@ -169,6 +172,7 @@
     "@antfu/install-pkg": "^0.3.1",
     "@edge-runtime/vm": "^3.1.8",
     "@sinonjs/fake-timers": "11.1.0",
+    "@types/babel__generator": "^7.6.8",
     "@types/estree": "^1.0.5",
     "@types/istanbul-lib-coverage": "^2.0.6",
     "@types/istanbul-reports": "^3.0.4",

@@ -11,13 +11,17 @@ import type { ViteDevServer } from 'vite'
 import type { StackTraceParserOptions } from '@vitest/utils/source-map'
 import { ViteNodeRunner } from 'vite-node/client'
 import { ViteNodeServer } from 'vite-node/server'
+import type { ParserOptions } from '@babel/parser'
+import babelParser from '@babel/parser'
+import babelTypes from '@babel/types'
+import babelGenerator from '@babel/generator'
 import { API_PATH } from '../constants'
 import type { Vitest } from '../node'
 import type { File, ModuleGraphData, Reporter, TaskResultPack, UserConsoleLog } from '../types'
 import { getModuleGraph, isPrimitive, noop, stringifyReplace } from '../utils'
 import type { WorkspaceProject } from '../node/workspace'
 import { parseErrorStacktrace } from '../utils/source-map'
-import type { TransformResultWithSource, WebSocketEvents, WebSocketHandlers } from './types'
+import type { CellOutput, TransformResultWithSource, WebSocketEvents, WebSocketHandlers } from './types'
 
 export function setup(vitestOrWorkspace: Vitest | WorkspaceProject, _server?: ViteDevServer) {
   const ctx = 'ctx' in vitestOrWorkspace ? vitestOrWorkspace.ctx : vitestOrWorkspace
@@ -40,8 +44,95 @@ export function setup(vitestOrWorkspace: Vitest | WorkspaceProject, _server?: Vi
     },
   })
 
-  server.watcher.on('change', (id) => {
+  function rewriteCode(code: string, language: string) {
+    const plugins = ((): ParserOptions['plugins'] => {
+      switch (language) {
+        case 'typescriptreact': return ['typescript', 'jsx']
+        case 'typescript': return ['typescript']
+        case 'javascriptreact': return ['jsx']
+        case 'javascript': return []
+        default: throw new Error(`unknown language: ${language}`)
+      }
+    })()
+
+    const ast = babelParser.parse(code, { sourceType: 'module', plugins })
+    const body = ast.program.body
+    const last = body[body.length - 1]
+    if (last.type === 'ExpressionStatement') {
+      const defaultExport = babelTypes.exportDefaultDeclaration(last.expression)
+      body[body.length - 1] = defaultExport
+    }
+    return babelGenerator(ast).code
+  }
+
+  const cellRegex = /^\.(.+)-([a-zA-z0-9_-]{21})$/
+
+  async function executeCell(id: string, path: string, cellId: string) {
+    clients.forEach(async (client) => {
+      await client.startCellExecution(path, cellId)
+    })
+    let data
+    let mime
+    try {
+      let { default: result } = await runner.executeFile(id)
+      if (result instanceof Promise)
+        result = await result
+      if (typeof result === 'object'
+        && ('data' in result && typeof result.data === 'string')
+        && ('mime' in result && typeof result.mime === 'string')
+      ) {
+        mime = result.mime
+        data = result.data
+      }
+      else {
+        mime = 'text/x-json'
+        data = JSON.stringify(result)
+      }
+    }
+    catch (e) {
+      const err = e as Error
+      const obj = {
+        name: err.name,
+        message: err.message,
+        stack: err.stack,
+      }
+      data = JSON.stringify(obj, undefined, '\t')
+      mime = 'application/vnd.code.notebook.error'
+    }
+    const cellOutput: CellOutput = {
+      items: data === undefined
+        ? []
+        : [
+            { data: [...Buffer.from(data, 'utf8').values()], mime },
+          ],
+    }
+    clients.forEach(async (client) => {
+      await client.endCellExecution(path, cellId, cellOutput)
+    })
+  }
+
+  function invalidateModule(id: string) {
+    const mod = runner.moduleCache.get(id)
     runner.moduleCache.delete(id)
+
+    const parsedPath = parsePath(id)
+    const match = cellRegex.exec(parsedPath.name)
+    if (match) {
+      const [_, name, cellId] = match
+      const path = join(parsedPath.dir, `${name}.tsnb`)
+      executeCell(id, path, cellId)
+    }
+
+    for (const dep of mod.importers)
+      invalidateModule(dep)
+  }
+
+  server.watcher.on('change', (id) => {
+    invalidateModule(id)
+  })
+
+  server.watcher.on('add', (id) => {
+    invalidateModule(id)
   })
 
   server.httpServer?.on('upgrade', (request, socket, head) => {
@@ -183,54 +274,29 @@ export function setup(vitestOrWorkspace: Vitest | WorkspaceProject, _server?: Vi
           return 'ctx' in vitestOrWorkspace ? vitestOrWorkspace.getProvidedContext() : ({} as any)
         },
         async executeCell(path, id, language, code) {
-          try {
-            const ext = (() => {
-              switch (language) {
-                case 'typescriptreact':
-                  return 'tsx'
-                case 'typescript':
-                  return 'ts'
-                case 'javascriptreact':
-                  return 'jsx'
-                case 'javascript':
-                  return 'js'
-                default:
-                  throw new Error(`unknown language "${language}"`)
-              }
-            })()
-            const parsedPath = parsePath(path)
-            const cellPath = join(parsedPath.dir, `.${parsedPath.name}-${id}.${ext}`)
-            await fs.writeFile(cellPath, code, 'utf-8')
-
-            runner.moduleCache.delete(cellPath)
-            const { default: result } = await runner.executeFile(cellPath)
-
-            return Promise.resolve({
-              items: [
-                { data: [...Buffer.from(JSON.stringify(result), 'utf8')], mime: 'application/json' },
-              ],
-            })
-          }
-          catch (e) {
-            const err = e as Error
-            const obj = {
-              name: err.name,
-              message: err.message,
-              stack: err.stack,
+          const ext = (() => {
+            switch (language) {
+              case 'typescriptreact':
+                return 'tsx'
+              case 'typescript':
+                return 'ts'
+              case 'javascriptreact':
+                return 'jsx'
+              case 'javascript':
+                return 'js'
+              default:
+                throw new Error(`unknown language "${language}"`)
             }
-            const json = JSON.stringify(obj, undefined, '\t')
-            return Promise.resolve({
-              items: [
-                { data: [...Buffer.from(json, 'utf8').values()], mime: 'application/vnd.code.notebook.error' },
-              ],
-            })
-          }
+          })()
+          const parsedPath = parsePath(path)
+          const cellPath = join(parsedPath.dir, `.${parsedPath.name}-${id}.${ext}`)
+          fs.writeFile(cellPath, rewriteCode(code, language), 'utf-8')
         },
       },
       {
         post: msg => ws.send(msg),
         on: fn => ws.on('message', fn),
-        eventNames: ['onUserConsoleLog', 'onFinished', 'onFinishedReportCoverage', 'onCollected', 'onCancel', 'onTaskUpdate'],
+        eventNames: ['onUserConsoleLog', 'onFinished', 'onFinishedReportCoverage', 'onCollected', 'onCancel', 'onTaskUpdate', 'startCellExecution', 'endCellExecution'],
         serialize: (data: any) => stringify(data, stringifyReplace),
         deserialize: parse,
         onTimeoutError(functionName) {

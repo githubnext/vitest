@@ -46,10 +46,13 @@ export interface WebSocketHandlers {
   getBrowserFiles: () => string[]
   debug: (...args: string[]) => void
 
-  executeCell: (path: string, id: string, language: string, code: string) => Promise<CellOutput>
+  executeCell: (path: string, id: string, language: string, code: string) => Promise<void>
 }
 
 export interface WebSocketEvents extends Pick<Reporter, 'onCollected' | 'onFinished' | 'onTaskUpdate' | 'onUserConsoleLog' | 'onPathsCollected'> {
   onCancel: (reason: CancelReason) => void
   onFinishedReportCoverage: () => void
+
+  startCellExecution: (path: string, cellId: string) => void
+  endCellExecution: (path: string, cellId: string, cellOutput: CellOutput) => void
 }
