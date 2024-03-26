@@ -85,7 +85,7 @@ export function setup(vitestOrWorkspace: Vitest | WorkspaceProject, _server?: Vi
         data = result.data
       }
       else {
-        mime = 'text/x-json'
+        mime = 'application/json'
         data = JSON.stringify(result)
       }
     }
