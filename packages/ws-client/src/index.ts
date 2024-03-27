@@ -76,6 +76,12 @@ export function createClient(url: string, options: VitestClientOptions = {}) {
     onCancel(reason: CancelReason) {
       handlers.onCancel?.(reason)
     },
+    startCellExecution(path, cellId) {
+      handlers.startCellExecution?.(path, cellId)
+    },
+    endCellExecution(path, cellId, cellOutput) {
+      handlers.endCellExecution?.(path, cellId, cellOutput)
+    },
   }
 
   const birpcHandlers: BirpcOptions<WebSocketHandlers> = {
