@@ -12,9 +12,9 @@ import type { StackTraceParserOptions } from '@vitest/utils/source-map'
 import { ViteNodeRunner } from 'vite-node/client'
 import { ViteNodeServer } from 'vite-node/server'
 import type { ParserOptions } from '@babel/parser'
-import babelParser from '@babel/parser'
-import babelTypes from '@babel/types'
-import babelGenerator from '@babel/generator'
+import * as babelParser from '@babel/parser'
+import * as babelTypes from '@babel/types'
+import * as babelGenerator from '@babel/generator'
 import { API_PATH } from '../constants'
 import type { Vitest } from '../node'
 import type { File, ModuleGraphData, Reporter, TaskResultPack, UserConsoleLog } from '../types'
@@ -54,18 +54,69 @@ export function setup(vitestOrWorkspace: Vitest | WorkspaceProject, _server?: Vi
         default: throw new Error(`unknown language: ${language}`)
       }
     })()
+    const parserOptions: ParserOptions = { sourceType: 'module', plugins }
 
-    const ast = babelParser.parse(code, { sourceType: 'module', plugins })
-    const body = ast.program.body
-    const last = body[body.length - 1]
-    if (last.type === 'ExpressionStatement') {
-      const defaultExport = babelTypes.exportDefaultDeclaration(last.expression)
-      body[body.length - 1] = defaultExport
+    let program
+
+    let exprAst = null
+    try {
+      exprAst = babelParser.parseExpression(code, parserOptions)
     }
-    return babelGenerator(ast).code
+    catch { }
+
+    if (exprAst) {
+      program = babelTypes.program([
+        babelTypes.exportDefaultDeclaration(exprAst),
+      ])
+    }
+    else {
+      const ast = babelParser.parse(code, parserOptions)
+      if (ast.program.body.length === 0) {
+        program = babelTypes.program([
+          babelTypes.exportDefaultDeclaration(babelTypes.buildUndefinedNode()),
+        ])
+      }
+      else {
+        const body = ast.program.body
+        const last = body[body.length - 1]
+        if (last.type === 'ExpressionStatement') {
+          const defaultExport = babelTypes.exportDefaultDeclaration(last.expression)
+          body[body.length - 1] = defaultExport
+        }
+        program = babelTypes.program(body)
+      }
+    }
+    return new babelGenerator.CodeGenerator(program).generate().code
   }
 
   const cellRegex = /^\.(.+)-([a-zA-z0-9_-]{21})$/
+
+  interface PossibleSVG {
+    outerHTML: string
+  }
+
+  function isSVGElementLike(obj: unknown): obj is PossibleSVG {
+    return (
+      obj !== null
+      && typeof obj === 'object'
+      && 'outerHTML' in obj
+      && typeof obj.outerHTML === 'string'
+      && obj.outerHTML.startsWith('<svg')
+    )
+  }
+
+  interface PossibleHTML {
+    outerHTML: string
+  }
+
+  function isHTMLElementLike(obj: unknown): obj is PossibleHTML {
+    return (
+      obj !== null
+      && typeof obj === 'object'
+      && 'outerHTML' in obj
+      && typeof obj.outerHTML === 'string'
+    )
+  }
 
   async function executeCell(id: string, path: string, cellId: string) {
     clients.forEach(async (client) => {
@@ -84,8 +135,20 @@ export function setup(vitestOrWorkspace: Vitest | WorkspaceProject, _server?: Vi
         mime = result.mime
         data = result.data
       }
-      else {
+      else if (isSVGElementLike(result)) {
+        mime = 'image/svg+xml'
+        data = result.outerHTML
+      }
+      else if (isHTMLElementLike(result)) {
+        mime = 'text/html'
+        data = result.outerHTML
+      }
+      else if (typeof result === 'object') {
         mime = 'application/json'
+        data = JSON.stringify(result)
+      }
+      else {
+        mime = 'text/x-javascript'
         data = JSON.stringify(result)
       }
     }
